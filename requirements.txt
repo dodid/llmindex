@@ -7,3 +7,4 @@ langchain_groq
 yfinance
 langchain_core
 matplotlib
+scipy
