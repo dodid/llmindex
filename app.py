@@ -200,8 +200,6 @@ def call_functions(llm_with_tools, user_prompt):
 
 def help():
 
-    st.write(generate_dummy_stock_symbols(5))
-
     multiline_text = """
     This application uses the Llama 3 model to answer questions about stocks and stock prices.
 
