@@ -1,3 +1,4 @@
+import copy
 import functools
 import os
 import random
@@ -16,505 +17,574 @@ from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
                                      ToolMessage)
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
+from scipy.stats import norm
 
 set_debug(True)
 
 proxy_url = os.getenv('GROQ_PROXY') or None
 
+json_schema = {
+    "type": "object",
+    "properties": {
+        "filters": {
+            "type": "object",
+            "properties": {
+                "market_cap": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number", "maximum": 1e100},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "pe_ratio": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "dividend_yield": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "debt_equity_ratio": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 1,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 1,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "esg_score": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "price_to_book_ratio": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "revenue": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "earnings_per_share": {
+                    "type": "object",
+                    "properties": {
+                        "range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2
+                        },
+                        "percentile_range": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "Array containing min and max percentiles for filtering"
+                        }
+                    }
+                },
+                "sector": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["Technology", "Healthcare", "Finance", "Consumer Discretionary",
+                                                         "Energy", "Utilities", "Materials", "Industrials", "Real Estate",
+                                                         "Communication Services"]}
+                },
+                "country": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["USA", "Canada", "UK", "Germany", "France", "Japan", "China",
+                                                        "India", "Brazil", "Australia"]}
+                }
+            }
+        },
+        "sort_by": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string"},
+                "order": {"type": "string", "enum": ["asc", "desc"]}
+            },
+            "required": ["field", "order"]
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1
+        },
+        "percentile_range_limit": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Array containing min and max percentiles to select from the results"
+        },
+        "weighting_method": {
+            "type": "string",
+            "enum": ["market_cap", "equal"],
+            "description": "Specifies how companies are weighted in the index"
+        },
+        "rebalancing_frequency": {
+            "type": "string",
+            "enum": ["weekly", "monthly", "quarterly"],
+            "description": "How often the index is reviewed and rebalanced"
+        },
+        "calculation_type": {
+            "type": "string",
+            "enum": ["total_return", "price_return", "net_return"],
+            "description": "How dividends, coupons, and taxes are treated in the index calculation"
+        },
+        "base_date": {
+            "type": "string",
+            "format": "date",
+            "description": "The date at which the index base value is set"
+        },
+        "base_value": {
+            "type": "number",
+            "description": "The starting value of the index at the base_date"
+        }
+    },
+    "required": []
+}
 
-def generate_dummy_stock_symbols(count, length=4):
-    """
-    Generates a list of dummy stock symbols.
 
-    Parameters:
-    count (int): The number of stock symbols to generate.
-    length (int): The length of each stock symbol. Defaults to 4.
+def generate_stock_metadata(num_stocks):
+    def random_ticker():
+        return ''.join(random.choices(string.ascii_uppercase, k=3))
 
-    Returns:
-    list: A list containing the generated stock symbols.
-    """
-    symbols = []
-    for _ in range(count):
-        symbol = ''.join(random.choices(string.ascii_uppercase, k=length))
-        symbols.append(symbol)
-    return symbols
+    tickers = [random_ticker() for _ in range(num_stocks)]
+    market_caps = np.random.uniform(1e9, 2e12, num_stocks)  # Market cap between 1 billion and 2 trillion USD
+    pe_ratios = np.random.uniform(5, 50, num_stocks)  # PE ratio between 5 and 50
+    dividend_yields = np.random.uniform(0, 0.1, num_stocks)  # Dividend yield between 0% and 10%
+    debt_equity_ratios = np.random.uniform(0, 2, num_stocks)  # Debt-to-equity ratio between 0 and 2
+    esg_scores = np.random.uniform(50, 90, num_stocks)  # ESG score between 50 and 90
+    price_to_book_ratios = np.random.uniform(1, 15, num_stocks)  # Price-to-book ratio between 1 and 15
+    revenues = np.random.uniform(1e8, 1e11, num_stocks)  # Revenue between 100 million and 100 billion USD
+    earnings_per_share = np.random.uniform(0.5, 10, num_stocks)  # Earnings per share between 0.5 and 10
+    sectors = [
+        random.choice(
+            ["Technology", "Healthcare", "Finance", "Consumer Discretionary", "Energy", "Utilities", "Materials",
+             "Industrials", "Real Estate", "Communication Services"]) for _ in range(num_stocks)]
+    countries = [
+        random.choice(["USA", "Canada", "UK", "Germany", "France", "Japan", "China", "India", "Brazil", "Australia"])
+        for _ in range(num_stocks)]
 
-
-def get_dummy_stock_info(symbol, industry=None, sector=None, country=None):
-    """
-    Returns dummy metadata information for a given stock symbol.
-
-    Parameters:
-    symbol (str): The stock symbol.
-    industry (str, optional): The industry of the company. Defaults to None.
-    sector (str, optional): The sector of the company. Defaults to None.
-    country (str, optional): The country of the company. Defaults to None.
-
-    Returns:
-    dict: A dictionary containing metadata information about the stock.
-    """
-    industries = ['Technology', 'Healthcare', 'Financial Services', 'Consumer Discretionary', 'Energy']
-    sectors = ['Information Technology', 'Health Care', 'Finance', 'Consumer Services', 'Utilities']
-    countries = ['United States', 'Canada', 'Germany', 'France', 'Japan']
-
-    info = {
-        'symbol': symbol,
-        'companyName': f'{symbol} Inc.',
-        'industry': industry if industry else random.choice(industries),
-        'sector': sector if sector else random.choice(sectors),
-        'country': country if country else random.choice(countries),
-        'fullTimeEmployees': random.randint(1000, 100000),
-        'marketCap': random.uniform(10e9, 500e9),
-        'beta': random.uniform(0.5, 1.5),
-        'dividendYield': random.uniform(0, 5),
-        'priceToEarnings': random.uniform(10, 30),
-        'forwardPE': random.uniform(10, 30),
-        'priceToSales': random.uniform(1, 10),
-        'priceToBook': random.uniform(1, 10),
-        'revenue': random.uniform(1e9, 100e9),
-        'grossProfits': random.uniform(1e8, 50e9),
-        'freeCashFlow': random.uniform(1e8, 50e9),
-        'ebitda': random.uniform(1e8, 50e9),
-        'earningsGrowth': random.uniform(-0.2, 0.2),
-        'revenueGrowth': random.uniform(-0.2, 0.2),
-        'debtToEquity': random.uniform(0, 2),
-        'currentRatio': random.uniform(0.5, 3),
-        'quickRatio': random.uniform(0.5, 3),
-        'totalAssets': random.uniform(1e9, 500e9),
-        'totalLiabilities': random.uniform(1e9, 500e9),
-        'operatingCashFlow': random.uniform(1e8, 50e9),
-        'grossMargins': random.uniform(0.1, 0.9),
-        'operatingMargins': random.uniform(0.1, 0.5),
-        'profitMargins': random.uniform(0.1, 0.5),
-        'sharesOutstanding': random.randint(10e6, 1e9),
-        'sharesFloat': random.randint(10e6, 1e9),
-        'sharesShort': random.randint(0, 10e6),
-        'shortRatio': random.uniform(0, 5),
-        'shortPercentOfFloat': random.uniform(0, 10),
-        'shortPercentOfSharesOutstanding': random.uniform(0, 10),
-        'recommendationKey': random.choice(['buy', 'outperform', 'hold', 'underperform', 'sell']),
-        'recommendationMean': random.uniform(1, 5),
-        'currentPrice': random.uniform(100, 500)
+    data = {
+        "market_cap": market_caps,
+        "pe_ratio": pe_ratios,
+        "dividend_yield": dividend_yields,
+        "debt_equity_ratio": debt_equity_ratios,
+        "esg_score": esg_scores,
+        "price_to_book_ratio": price_to_book_ratios,
+        "revenue": revenues,
+        "earnings_per_share": earnings_per_share,
+        "sector": sectors,
+        "country": countries
     }
-    return info
+
+    df = pd.DataFrame(data, index=tickers)
+    return df
 
 
-def generate_random_walk(symbol, start_date, end_date, init_value=100, mean=0, stddev=0.01):
+def random_update_stock_metadata(df):
     """
-    Generate a random walk time series for the closing prices of a stock.
+    Apply random updates to stock metadata in a DataFrame to simulate realistic changes.
 
     Parameters:
-    symbol (str): The stock symbol (not used in computation, just for reference).
-    start_date (str): The start date of the series (format: 'YYYY-MM-DD').
-    end_date (str): The end date of the series (format: 'YYYY-MM-DD').
-    init_value (float): The initial value of the stock price.
-    mean (float): The mean of the daily returns.
-    stddev (float): The standard deviation of the daily returns.
+    - df: DataFrame containing stock metadata.
 
     Returns:
-    pd.Series: The generated closing prices time series.
+    - DataFrame with updated metadata.
     """
-    # Generate date range
-    dates = pd.date_range(start=start_date, end=end_date, freq='B')  # 'B' for business days
+    # Define realistic ranges for each field to ensure updates are plausible
+    ranges = {
+        'market_cap': (1e9, 1e12),  # Market Cap in range from 1 Billion to 1 Trillion
+        'pe_ratio': (5, 50),        # P/E Ratio in range from 5 to 50
+        'dividend_yield': (0, 10),  # Dividend Yield in range from 0% to 10%
+        'debt_equity_ratio': (0, 2),  # Debt/Equity Ratio from 0 to 2
+        'esg_score': (0, 100),       # ESG Score from 0 to 100
+        'price_to_book_ratio': (0, 5),  # Price to Book Ratio from 0 to 5
+        'revenue': (1e8, 1e11),      # Revenue from 100 Million to 100 Billion
+        'earnings_per_share': (-10, 50)  # EPS from -10 to 50
+    }
 
-    # Number of days in the date range
-    num_days = len(dates)
+    # Function to apply random updates within the defined ranges
+    def apply_random_update(x, field):
+        if field in ranges:
+            min_val, max_val = ranges[field]
+            # Apply a random change within a reasonable percentage of the current value
+            change_percent = np.random.uniform(-0.05, 0.05)  # Random change between -5% and +5%
+            new_value = x * (1 + change_percent)
+            return np.clip(new_value, min_val, max_val)
+        else:
+            return x  # If field is not defined in ranges, no change is applied
 
-    # Generate random daily returns
-    daily_returns = np.random.normal(loc=mean, scale=stddev, size=num_days)
+    # Update each field in the DataFrame using the random update function
+    for field in ranges.keys():
+        if field in df.columns:
+            df[field] = df[field].apply(lambda x: apply_random_update(x, field))
 
-    # Compute cumulative returns
-    cumulative_returns = np.cumsum(daily_returns)
-
-    # Compute price series
-    price_series = init_value * np.exp(cumulative_returns)
-
-    # Create a pandas Series
-    price_series = pd.Series(data=price_series, index=dates, name=symbol)
-
-    return price_series
-
-
-@tool
-def get_stock_info(symbol, key):
-    '''Return the correct stock info value given the appropriate symbol and key. Infer valid key from the user prompt; it must be one of the following:
-
-    currentPrice,symbol,companyName,industry,sector,country,fullTimeEmployees,marketCap,beta,dividendYield,priceToEarnings,forwardPE,priceToSales,priceToBook,revenue,grossProfits,freeCashFlow,ebitda,earningsGrowth,revenueGrowth,debtToEquity,currentRatio,quickRatio,totalAssets,totalLiabilities,operatingCashFlow,grossMargins,operatingMargins,profitMargins,sharesOutstanding,sharesFloat,sharesShort,shortRatio,shortPercentOfFloat,shortPercentOfSharesOutstanding,recommendationKey,recommendationMean
-
-    If asked generically for 'stock price', use currentPrice
-    '''
-    try:
-        return st.session_state.symbol_universe.loc[symbol, key]
-    except KeyError:
-        return 'Not found'
+    return df
 
 
-@tool
-def get_historical_price(symbol, start_date, end_date):
+def generate_random_walk_prices(symbols):
     """
-    Fetches historical stock prices for a given symbol from 'start_date' to 'end_date'.
-    - symbol (str): Stock ticker symbol.
-    - end_date (date): Typically today unless a specific end date is provided. End date MUST be greater than start date
-    - start_date (date): Set explicitly, or calculated as 'end_date - date interval' (for example, if prompted 'over the past 6 months', date interval = 6 months so start_date would be 6 months earlier than today's date). Default to '1900-01-01' if vaguely asked for historical price. Start date must always be before the current date
-    """
-
-    return generate_random_walk(symbol, start_date, end_date)
-
-@tool
-def rank_stocks_by_metric(universe, metric, limit, ascending=True):
-    """
-    Ranks the stocks in the universe based on the provided metric. 
-
-    metric can be currentPrice,fullTimeEmployees,marketCap,beta,dividendYield,priceToEarnings,forwardPE,priceToSales,priceToBook,revenue,grossProfits,freeCashFlow,ebitda,earningsGrowth,revenueGrowth,debtToEquity,currentRatio,quickRatio,totalAssets,totalLiabilities,operatingCashFlow,grossMargins,operatingMargins,profitMargins,sharesOutstanding,sharesFloat,sharesShort,shortRatio,shortPercentOfFloat,shortPercentOfSharesOutstanding,recommendationKey,recommendationMean
-
-    - universe (str): The stock symbols to rank as comma separated list. Use None for the whole universe.
-    - metric (str): The metric to rank the stocks by.
-    - limit (int): The number of stocks to return.
-    - ascending (bool): Whether to rank the stocks in ascending order. Defaults to True.
-    """
-    if universe in [None, 'all', '']:
-        universe = st.session_state.symbol_universe.index.tolist()
-    else:
-        universe = universe.split(',')
-    result = st.session_state.symbol_universe.loc[universe][metric].sort_values(ascending=ascending).index[:limit].tolist()
-    return f'The stocks are ranked by {metric} in {"ascending" if ascending else "descending"} order: {", ".join(result)}'
-
-
-@tool
-def filter_stocks(universe=None,
-                currentPriceMin=None, currentPriceMax=None,
-                industry=None, sector=None, country=None,
-                fullTimeEmployeesMin=None, fullTimeEmployeesMax=None,
-                marketCapMin=None, marketCapMax=None,
-                betaMin=None, betaMax=None,
-                dividendYieldMin=None, dividendYieldMax=None,
-                priceToEarningsMin=None, priceToEarningsMax=None,
-                forwardPEMin=None, forwardPEMax=None,
-                priceToSalesMin=None, priceToSalesMax=None,
-                priceToBookMin=None, priceToBookMax=None,
-                revenueMin=None, revenueMax=None,
-                grossProfitsMin=None, grossProfitsMax=None,
-                freeCashFlowMin=None, freeCashFlowMax=None,
-                ebitdaMin=None, ebitdaMax=None,
-                earningsGrowthMin=None, earningsGrowthMax=None,
-                revenueGrowthMin=None, revenueGrowthMax=None,
-                debtToEquityMin=None, debtToEquityMax=None,
-                currentRatioMin=None, currentRatioMax=None,
-                quickRatioMin=None, quickRatioMax=None,
-                totalAssetsMin=None, totalAssetsMax=None,
-                totalLiabilitiesMin=None, totalLiabilitiesMax=None,
-                operatingCashFlowMin=None, operatingCashFlowMax=None,
-                grossMarginsMin=None, grossMarginsMax=None,
-                operatingMarginsMin=None, operatingMarginsMax=None,
-                profitMarginsMin=None, profitMarginsMax=None,
-                sharesOutstandingMin=None, sharesOutstandingMax=None,
-                sharesFloatMin=None, sharesFloatMax=None,
-                sharesShortMin=None, sharesShortMax=None,
-                shortRatioMin=None, shortRatioMax=None,
-                shortPercentOfFloatMin=None, shortPercentOfFloatMax=None,
-                shortPercentOfSharesOutstandingMin=None, shortPercentOfSharesOutstandingMax=None,
-                recommendationKey=None,
-                recommendationMeanMin=None, recommendationMeanMax=None):
-    """
-    Filters the stock universe based on the provided criteria. 
-    If an argument is not provided, it is not used as a filter.
-    Do not invent values for unused arguments. 
-
-    industries = ['Technology', 'Healthcare', 'Financial Services', 'Consumer Discretionary', 'Energy']
-    sectors = ['Information Technology', 'Health Care', 'Finance', 'Consumer Services', 'Utilities']
-    countries = ['United States', 'Canada', 'Germany', 'France', 'Japan']
+    Generate dummy stock close prices following a random walk for a list of stock symbols up to today.
 
     Parameters:
-        universe (str): The stock universe as comma separated values, the whole universe if None.
-        currentPriceMin (float): The minimum current price of the stock.
-        currentPriceMax (float): The maximum current price of the stock.
-        industry (str): The industry of the company.
-        sector (str): The sector of the company.
-        country (str): The country of the company.  
-        fullTimeEmployeesMin (int): The minimum number of full-time employees.
-        fullTimeEmployeesMax (int): The maximum number of full-time employees.
-        marketCapMin (float): The minimum market capitalization.
-        marketCapMax (float): The maximum market capitalization.
-        betaMin (float): The minimum beta value.
-        betaMax (float): The maximum beta value.
-        dividendYieldMin (float): The minimum dividend yield.
-        dividendYieldMax (float): The maximum dividend yield.
-        priceToEarningsMin (float): The minimum price-to-earnings ratio.
-        priceToEarningsMax (float): The maximum price-to-earnings ratio.
-        forwardPEMin (float): The minimum forward price-to-earnings ratio.
-        forwardPEMax (float): The maximum forward price-to-earnings ratio.
-        priceToSalesMin (float): The minimum price-to-sales ratio.
-        priceToSalesMax (float): The maximum price-to-sales ratio.
-        priceToBookMin (float): The minimum price-to-book ratio.
-        priceToBookMax (float): The maximum price-to-book ratio.
-        revenueMin (float): The minimum revenue.
-        revenueMax (float): The maximum revenue.
-        grossProfitsMin (float): The minimum gross profits.
-        grossProfitsMax (float): The maximum gross profits.
-        freeCashFlowMin (float): The minimum free cash flow.
-        freeCashFlowMax (float): The maximum free cash flow.
-        ebitdaMin (float): The minimum EBITDA.
-        ebitdaMax (float): The maximum EBITDA.
-        earningsGrowthMin (float): The minimum earnings growth.
-        earningsGrowthMax (float): The maximum earnings growth.
-        revenueGrowthMin (float): The minimum revenue growth.
-        revenueGrowthMax (float): The maximum revenue growth.
-        debtToEquityMin (float): The minimum debt-to-equity ratio.
-        debtToEquityMax (float): The maximum debt-to-equity ratio.
-        currentRatioMin (float): The minimum current ratio.
-        currentRatioMax (float): The maximum current ratio.
-        quickRatioMin (float): The minimum quick ratio.
-        quickRatioMax (float): The maximum quick ratio.
-        totalAssetsMin (float): The minimum total assets.
-        totalAssetsMax (float): The maximum total assets.
-        totalLiabilitiesMin (float): The minimum total liabilities.
-        totalLiabilitiesMax (float): The maximum total liabilities.
-        operatingCashFlowMin (float): The minimum operating cash flow.
-        operatingCashFlowMax (float): The maximum operating cash flow.
-        grossMarginsMin (float): The minimum gross margins.
-        grossMarginsMax (float): The maximum gross margins.
-        operatingMarginsMin (float): The minimum operating margins.
-        operatingMarginsMax (float): The maximum operating margins.
-        profitMarginsMin (float): The minimum profit margins.
-        profitMarginsMax (float): The maximum profit margins.
-        sharesOutstandingMin (float): The minimum shares outstanding.
-        sharesOutstandingMax (float): The maximum shares outstanding.
-        sharesFloatMin (float): The minimum shares float.
-        sharesFloatMax (float): The maximum shares float.
-        sharesShortMin (float): The minimum shares short.
-        sharesShortMax (float): The maximum shares short.
-        shortRatioMin (float): The minimum short ratio.
-        shortRatioMax (float): The maximum short ratio.
-        shortPercentOfFloatMin (float): The minimum short percent of float.
-        shortPercentOfFloatMax (float): The maximum short percent of float.
-        shortPercentOfSharesOutstandingMin (float): The minimum short percent of shares outstanding.
-        shortPercentOfSharesOutstandingMax (float): The maximum short percent of shares outstanding.
-        recommendationKey (str): The recommendation key.
-        recommendationMeanMin (float): The minimum recommendation mean.
-        recommendationMeanMax (float): The maximum recommendation mean.
+    - symbols: List of stock symbols to generate prices for.
+
+    Returns:
+    - DataFrame with stock symbols as columns and rows as dates with generated close prices.
     """
-    filtered = stock_screener(**locals())
-    return f'The following {len(filtered)} stocks meet the criteria: {", ".join(filtered)}' if filtered else 'No stocks meet the criteria'
+    # Get today's date and generate date range from 2020-01-01 to today
+    end_date = pd.Timestamp.today()
+    start_date = pd.Timestamp('2022-01-01')
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+
+    # Initialize DataFrame to hold the stock prices
+    price_df = pd.DataFrame(index=date_range)
+
+    # Generate random walk prices for each symbol
+    for symbol in symbols:
+        # Randomly initialize the start price between 50 and 150
+        start_price = np.random.uniform(50, 150)
+
+        # Initialize the price series with the start price
+        prices = [start_price]
+
+        # Generate random daily returns and accumulate them
+        for _ in range(1, len(date_range)):
+            daily_return = np.random.normal(loc=0.001, scale=0.02)  # Daily return with mean 0.1% and std dev 2%
+            new_price = prices[-1] * (1 + daily_return)
+            prices.append(new_price)
+
+        # Add the price series to the DataFrame
+        price_df[symbol] = prices
+
+    return price_df
 
 
-def stock_screener(
-        universe: str, currentPriceMin: str = None, currentPriceMax: str = None,
-        industry: str = None, sector: str = None, country: str = None, fullTimeEmployeesMin: str = None,
-        fullTimeEmployeesMax: str = None, marketCapMin: str = None, marketCapMax: str = None, betaMin: str = None,
-        betaMax: str = None, dividendYieldMin: str = None, dividendYieldMax: str = None, priceToEarningsMin: str = None,
-        priceToEarningsMax: str = None, forwardPEMin: str = None, forwardPEMax: str = None, priceToSalesMin: str = None,
-        priceToSalesMax: str = None, priceToBookMin: str = None, priceToBookMax: str = None, revenueMin: str = None,
-        revenueMax: str = None, grossProfitsMin: str = None, grossProfitsMax: str = None, freeCashFlowMin: str = None,
-        freeCashFlowMax: str = None, ebitdaMin: str = None, ebitdaMax: str = None, earningsGrowthMin: str = None,
-        earningsGrowthMax: str = None, revenueGrowthMin: str = None, revenueGrowthMax: str = None, debtToEquityMin: str = None,
-        debtToEquityMax: str = None, currentRatioMin: str = None, currentRatioMax: str = None, quickRatioMin: str = None,
-        quickRatioMax: str = None, totalAssetsMin: str = None, totalAssetsMax: str = None, totalLiabilitiesMin: str = None,
-        totalLiabilitiesMax: str = None, operatingCashFlowMin: str = None, operatingCashFlowMax: str = None,
-        grossMarginsMin: str = None, grossMarginsMax: str = None, operatingMarginsMin: str = None,
-        operatingMarginsMax: str = None, profitMarginsMin: str = None, profitMarginsMax: str = None,
-        sharesOutstandingMin: str = None, sharesOutstandingMax: str = None, sharesFloatMin: str = None,
-        sharesFloatMax: str = None, sharesShortMin: str = None, sharesShortMax: str = None, shortRatioMin: str = None,
-        shortRatioMax: str = None, shortPercentOfFloatMin: str = None, shortPercentOfFloatMax: str = None,
-        shortPercentOfSharesOutstandingMin: str = None, shortPercentOfSharesOutstandingMax: str = None,
-        recommendationKey: str = None, recommendationMeanMin: str = None, recommendationMeanMax: str = None) -> list[str]:
-
-    if universe in [None, 'all', '']:
-        universe = st.session_state.symbol_universe.index.tolist()
+def update_schema_object(config=None, update=None, ):
+    def recursive_merge(dict1, dict2):
+        for key, value in dict2.items():
+            if key in dict1 and isinstance(dict1[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dictionaries
+                recursive_merge(dict1[key], value)
+            else:
+                # Merge non-dictionary values
+                dict1[key] = value
+    if not update:
+        return config
     else:
-        universe = universe.split(',')
-    universe = st.session_state.symbol_universe.loc[universe]
-
-    # Helper function to convert string to numeric, returning None if conversion fails
-    def to_numeric(value):
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
-
-    # Apply filters
-    df_filtered = universe
-
-    if currentPriceMin is not None:
-        df_filtered = df_filtered[df_filtered['currentPrice'] >= to_numeric(currentPriceMin)]
-    if currentPriceMax is not None:
-        df_filtered = df_filtered[df_filtered['currentPrice'] <= to_numeric(currentPriceMax)]
-
-    if industry is not None:
-        df_filtered = df_filtered[df_filtered['industry'] == industry]
-    if sector is not None:
-        df_filtered = df_filtered[df_filtered['sector'] == sector]
-    if country is not None:
-        df_filtered = df_filtered[df_filtered['country'] == country]
-
-    if fullTimeEmployeesMin is not None:
-        df_filtered = df_filtered[df_filtered['fullTimeEmployees'] >= to_numeric(fullTimeEmployeesMin)]
-    if fullTimeEmployeesMax is not None:
-        df_filtered = df_filtered[df_filtered['fullTimeEmployees'] <= to_numeric(fullTimeEmployeesMax)]
-
-    if marketCapMin is not None:
-        df_filtered = df_filtered[df_filtered['marketCap'] >= to_numeric(marketCapMin)]
-    if marketCapMax is not None:
-        df_filtered = df_filtered[df_filtered['marketCap'] <= to_numeric(marketCapMax)]
-
-    if betaMin is not None:
-        df_filtered = df_filtered[df_filtered['beta'] >= to_numeric(betaMin)]
-    if betaMax is not None:
-        df_filtered = df_filtered[df_filtered['beta'] <= to_numeric(betaMax)]
-
-    if dividendYieldMin is not None:
-        df_filtered = df_filtered[df_filtered['dividendYield'] >= to_numeric(dividendYieldMin)]
-    if dividendYieldMax is not None:
-        df_filtered = df_filtered[df_filtered['dividendYield'] <= to_numeric(dividendYieldMax)]
-
-    if priceToEarningsMin is not None:
-        df_filtered = df_filtered[df_filtered['priceToEarnings'] >= to_numeric(priceToEarningsMin)]
-    if priceToEarningsMax is not None:
-        df_filtered = df_filtered[df_filtered['priceToEarnings'] <= to_numeric(priceToEarningsMax)]
-
-    if forwardPEMin is not None:
-        df_filtered = df_filtered[df_filtered['forwardPE'] >= to_numeric(forwardPEMin)]
-    if forwardPEMax is not None:
-        df_filtered = df_filtered[df_filtered['forwardPE'] <= to_numeric(forwardPEMax)]
-
-    if priceToSalesMin is not None:
-        df_filtered = df_filtered[df_filtered['priceToSales'] >= to_numeric(priceToSalesMin)]
-    if priceToSalesMax is not None:
-        df_filtered = df_filtered[df_filtered['priceToSales'] <= to_numeric(priceToSalesMax)]
-
-    if priceToBookMin is not None:
-        df_filtered = df_filtered[df_filtered['priceToBook'] >= to_numeric(priceToBookMin)]
-    if priceToBookMax is not None:
-        df_filtered = df_filtered[df_filtered['priceToBook'] <= to_numeric(priceToBookMax)]
-
-    if revenueMin is not None:
-        df_filtered = df_filtered[df_filtered['revenue'] >= to_numeric(revenueMin)]
-    if revenueMax is not None:
-        df_filtered = df_filtered[df_filtered['revenue'] <= to_numeric(revenueMax)]
-
-    if grossProfitsMin is not None:
-        df_filtered = df_filtered[df_filtered['grossProfits'] >= to_numeric(grossProfitsMin)]
-    if grossProfitsMax is not None:
-        df_filtered = df_filtered[df_filtered['grossProfits'] <= to_numeric(grossProfitsMax)]
-
-    if freeCashFlowMin is not None:
-        df_filtered = df_filtered[df_filtered['freeCashFlow'] >= to_numeric(freeCashFlowMin)]
-    if freeCashFlowMax is not None:
-        df_filtered = df_filtered[df_filtered['freeCashFlow'] <= to_numeric(freeCashFlowMax)]
-
-    if ebitdaMin is not None:
-        df_filtered = df_filtered[df_filtered['ebitda'] >= to_numeric(ebitdaMin)]
-    if ebitdaMax is not None:
-        df_filtered = df_filtered[df_filtered['ebitda'] <= to_numeric(ebitdaMax)]
-
-    if earningsGrowthMin is not None:
-        df_filtered = df_filtered[df_filtered['earningsGrowth'] >= to_numeric(earningsGrowthMin)]
-    if earningsGrowthMax is not None:
-        df_filtered = df_filtered[df_filtered['earningsGrowth'] <= to_numeric(earningsGrowthMax)]
-
-    if revenueGrowthMin is not None:
-        df_filtered = df_filtered[df_filtered['revenueGrowth'] >= to_numeric(revenueGrowthMin)]
-    if revenueGrowthMax is not None:
-        df_filtered = df_filtered[df_filtered['revenueGrowth'] <= to_numeric(revenueGrowthMax)]
-
-    if debtToEquityMin is not None:
-        df_filtered = df_filtered[df_filtered['debtToEquity'] >= to_numeric(debtToEquityMin)]
-    if debtToEquityMax is not None:
-        df_filtered = df_filtered[df_filtered['debtToEquity'] <= to_numeric(debtToEquityMax)]
-
-    if currentRatioMin is not None:
-        df_filtered = df_filtered[df_filtered['currentRatio'] >= to_numeric(currentRatioMin)]
-    if currentRatioMax is not None:
-        df_filtered = df_filtered[df_filtered['currentRatio'] <= to_numeric(currentRatioMax)]
-
-    if quickRatioMin is not None:
-        df_filtered = df_filtered[df_filtered['quickRatio'] >= to_numeric(quickRatioMin)]
-    if quickRatioMax is not None:
-        df_filtered = df_filtered[df_filtered['quickRatio'] <= to_numeric(quickRatioMax)]
-
-    if totalAssetsMin is not None:
-        df_filtered = df_filtered[df_filtered['totalAssets'] >= to_numeric(totalAssetsMin)]
-    if totalAssetsMax is not None:
-        df_filtered = df_filtered[df_filtered['totalAssets'] <= to_numeric(totalAssetsMax)]
-
-    if totalLiabilitiesMin is not None:
-        df_filtered = df_filtered[df_filtered['totalLiabilities'] >= to_numeric(totalLiabilitiesMin)]
-    if totalLiabilitiesMax is not None:
-        df_filtered = df_filtered[df_filtered['totalLiabilities'] <= to_numeric(totalLiabilitiesMax)]
-
-    if operatingCashFlowMin is not None:
-        df_filtered = df_filtered[df_filtered['operatingCashFlow'] >= to_numeric(operatingCashFlowMin)]
-    if operatingCashFlowMax is not None:
-        df_filtered = df_filtered[df_filtered['operatingCashFlow'] <= to_numeric(operatingCashFlowMax)]
-
-    if grossMarginsMin is not None:
-        df_filtered = df_filtered[df_filtered['grossMargins'] >= to_numeric(grossMarginsMin)]
-    if grossMarginsMax is not None:
-        df_filtered = df_filtered[df_filtered['grossMargins'] <= to_numeric(grossMarginsMax)]
-
-    if operatingMarginsMin is not None:
-        df_filtered = df_filtered[df_filtered['operatingMargins'] >= to_numeric(operatingMarginsMin)]
-    if operatingMarginsMax is not None:
-        df_filtered = df_filtered[df_filtered['operatingMargins'] <= to_numeric(operatingMarginsMax)]
-
-    if profitMarginsMin is not None:
-        df_filtered = df_filtered[df_filtered['profitMargins'] >= to_numeric(profitMarginsMin)]
-    if profitMarginsMax is not None:
-        df_filtered = df_filtered[df_filtered['profitMargins'] <= to_numeric(profitMarginsMax)]
-
-    if sharesOutstandingMin is not None:
-        df_filtered = df_filtered[df_filtered['sharesOutstanding'] >= to_numeric(sharesOutstandingMin)]
-    if sharesOutstandingMax is not None:
-        df_filtered = df_filtered[df_filtered['sharesOutstanding'] <= to_numeric(sharesOutstandingMax)]
-
-    if sharesFloatMin is not None:
-        df_filtered = df_filtered[df_filtered['sharesFloat'] >= to_numeric(sharesFloatMin)]
-    if sharesFloatMax is not None:
-        df_filtered = df_filtered[df_filtered['sharesFloat'] <= to_numeric(sharesFloatMax)]
-
-    if sharesShortMin is not None:
-        df_filtered = df_filtered[df_filtered['sharesShort'] >= to_numeric(sharesShortMin)]
-    if sharesShortMax is not None:
-        df_filtered = df_filtered[df_filtered['sharesShort'] <= to_numeric(sharesShortMax)]
-
-    if shortRatioMin is not None:
-        df_filtered = df_filtered[df_filtered['shortRatio'] >= to_numeric(shortRatioMin)]
-    if shortRatioMax is not None:
-        df_filtered = df_filtered[df_filtered['shortRatio'] <= to_numeric(shortRatioMax)]
-
-    if shortPercentOfFloatMin is not None:
-        df_filtered = df_filtered[df_filtered['shortPercentOfFloat'] >= to_numeric(shortPercentOfFloatMin)]
-    if shortPercentOfFloatMax is not None:
-        df_filtered = df_filtered[df_filtered['shortPercentOfFloat'] <= to_numeric(shortPercentOfFloatMax)]
-
-    if shortPercentOfSharesOutstandingMin is not None:
-        df_filtered = df_filtered[df_filtered['shortPercentOfSharesOutstanding'] >=
-                                  to_numeric(shortPercentOfSharesOutstandingMin)]
-    if shortPercentOfSharesOutstandingMax is not None:
-        df_filtered = df_filtered[df_filtered['shortPercentOfSharesOutstanding'] <=
-                                  to_numeric(shortPercentOfSharesOutstandingMax)]
-
-    if recommendationKey is not None:
-        df_filtered = df_filtered[df_filtered['recommendationKey'] == recommendationKey]
-
-    if recommendationMeanMin is not None:
-        df_filtered = df_filtered[df_filtered['recommendationMean'] >= to_numeric(recommendationMeanMin)]
-    if recommendationMeanMax is not None:
-        df_filtered = df_filtered[df_filtered['recommendationMean'] <= to_numeric(recommendationMeanMax)]
-
-    # Return the list of stock symbols that meet the criteria
-    return df_filtered.index.tolist()
+        config = copy.deepcopy(config) if config is not None else {}
+        recursive_merge(config, update)
+        return config
 
 
-def plot_price_over_time(price_series):
+def apply_screening(metadata, config):
+    # Extract filters from the schema
+    filters = config.get('filters', {})
+    progress = []
 
-    fig = plt.figure(figsize=(10, 6))
-    for s in price_series:
-        plt.plot(s.index, s, label=s.name)
-    plt.xlabel('Date')
-    plt.ylabel('Price')
-    plt.title('Historical Stock Prices')
-    plt.legend()
-    st.pyplot(fig)
+    # Apply percentile range filters first
+    for field, conditions in filters.items():
+        if 'percentile_range' in conditions and pd.api.types.is_numeric_dtype(metadata[field]):
+            min_percentile, max_percentile = conditions['percentile_range']
+            min_value = metadata[field].quantile(min_percentile / 100.0)
+            max_value = metadata[field].quantile(max_percentile / 100.0)
+            metadata = metadata[(metadata[field] >= min_value) & (metadata[field] <= max_value)]
+            progress.append((field, 'percentile_range', len(metadata)))
+
+    # Apply numeric range filters
+    for field, conditions in filters.items():
+        if 'range' in conditions and pd.api.types.is_numeric_dtype(metadata[field]):
+            min_value, max_value = conditions['range']
+            if min_value is not None:
+                metadata = metadata[metadata[field] >= min_value]
+            if max_value is not None:
+                metadata = metadata[metadata[field] <= max_value]
+            progress.append((field, 'range', len(metadata)))
+
+    # Apply categorical filters
+    for field in ['sector', 'country']:
+        if field in filters:
+            allowed_values = filters[field]
+            if allowed_values:
+                metadata = metadata[metadata[field].isin(allowed_values)]
+            progress.append((field, allowed_values, len(metadata)))
+
+    # Apply sorting
+    sort_by = config.get('sort_by', {})
+    field = sort_by.get('field')
+    order = sort_by.get('order', 'asc')
+    if field in metadata.columns:
+        metadata = metadata.sort_values(by=field, ascending=(order == 'asc'))
+
+    # Apply limit
+    limit = config.get('limit', None)
+    if limit is not None:
+        metadata = metadata.head(limit)
+        progress.append(('limit', limit, len(metadata)))
+
+    # Apply percentile range limit (if provided)
+    percentile_range_limit = config.get('percentile_range_limit', None)
+    if percentile_range_limit:
+        min_percentile, max_percentile = percentile_range_limit
+        for field in metadata.columns:
+            if pd.api.types.is_numeric_dtype(metadata[field]):
+                min_value = metadata[field].quantile(min_percentile / 100.0)
+                max_value = metadata[field].quantile(max_percentile / 100.0)
+                metadata = metadata[(metadata[field] >= min_value) & (metadata[field] <= max_value)]
+                progress.append(('percentile_range_limit', field, len(metadata)))
+
+    return metadata.index.to_list()
+
+
+def calculate_index_value(stock_price_df, stock_metadata, schema):
+    """
+    Calculate the index value based on index symbols, stock price DataFrame, stock metadata, and schema.
+
+    Parameters:
+    - index_symbols: List of stock symbols to be included in the index.
+    - stock_price_df: DataFrame with historical stock prices.
+    - stock_metadata: DataFrame with stock metadata including tickers, market cap, etc.
+    - schema: Dictionary with index definition details including weighting method and rebalancing frequency.
+
+    Returns:
+    - DataFrame with index values over time.
+    """
+    # Extract schema details
+    weighting_method = schema.get('weighting_method', 'market_cap')
+    rebalancing_frequency = schema.get('rebalancing_frequency', 'monthly')
+
+    # Filter metadata for the index symbols
+    stock_metadata = random_update_stock_metadata(stock_metadata)
+    index_symbols = apply_screening(stock_metadata, schema)
+    relevant_metadata = stock_metadata[stock_metadata.index.isin(index_symbols)].copy()
+
+    # Define rebalancing period
+    rebalance_period = {
+        'quarterly': 'Q',
+        'monthly': 'M',
+        'weekly': 'W'
+    }.get(rebalancing_frequency, 'M')
+
+    def calculate_weights(metadata, method):
+        """Calculate weights based on the specified weighting method."""
+        if method == 'market_cap':
+            metadata['weight'] = metadata['market_cap'] / metadata['market_cap'].sum()
+        elif method == 'equal':
+            metadata['weight'] = 1.0 / len(metadata)
+        else:
+            raise ValueError(f"Unsupported weighting method: {method}")
+        return metadata[['weight']]
+
+    def apply_weights(prices, weights):
+        """Apply weights to stock prices to calculate the index value."""
+        weighted_prices = prices * weights
+        return weighted_prices.sum()
+
+    def rebalance_weights(date):
+        """Calculate weights for the rebalance date."""
+        # Recalculate weights on rebalancing dates
+        return calculate_weights(relevant_metadata, weighting_method)
+
+    # Initialize DataFrame to hold the index values
+    index_values = pd.DataFrame(index=stock_price_df.index)
+
+    # Initialize weights
+    current_weights = calculate_weights(relevant_metadata, weighting_method)
+
+    # Calculate index values
+    last_rebalance_date = stock_price_df.index[0]
+
+    for date in stock_price_df.index:
+        # Rebalance if needed
+        dr = pd.date_range(last_rebalance_date, date, freq=rebalance_period)
+        if len(dr) > 0 and dr[-1] == date:
+            stock_metadata = random_update_stock_metadata(stock_metadata)
+            index_symbols = apply_screening(stock_metadata, schema)
+            relevant_metadata = stock_metadata[stock_metadata.index.isin(index_symbols)].copy()
+            current_weights = rebalance_weights(date)
+            last_rebalance_date = date
+
+        # Calculate index value
+        if not current_weights.empty:
+            index_values.loc[date, 'Index'] = apply_weights(stock_price_df.loc[date], current_weights['weight'])
+        else:
+            index_values.loc[date, 'Index'] = np.nan  # Handle case where no weights are available
+
+    return index_values
+
+
+def calculate_all_periods_performance(index_values, base_value=1000):
+    # Ensure the index_values is a DataFrame with a DateTime index
+    if not isinstance(index_values, pd.DataFrame):
+        raise ValueError("index_values should be a pandas DataFrame")
+    if not isinstance(index_values.index, pd.DatetimeIndex):
+        raise ValueError("Index of index_values should be a pandas DateTimeIndex")
+
+    periods = {
+        '30D': pd.DateOffset(days=30),
+        '90D': pd.DateOffset(days=90),
+        '180D': pd.DateOffset(days=180),
+        '360D': pd.DateOffset(days=360),
+        'YTD': pd.DateOffset(months=(pd.Timestamp.now().month - 1)),
+        'Since Inception': pd.DateOffset(days=(pd.Timestamp.now() - index_values.index.min()).days)
+    }
+
+    def calculate_period_metrics(df, period):
+        start_date = df.index[-1] - period
+        df_period = df.loc[start_date:]
+
+        if df_period.empty:
+            return {metric: np.nan for metric in metrics_names}
+
+        # Calculate daily returns
+        df_period['Return'] = df_period.pct_change().dropna()
+
+        # Metrics
+        metrics = {}
+        metrics['Performance'] = (df_period.iloc[-1] / df_period.iloc[0] - 1).values[0]
+        metrics['Volatility (p.a.)'] = df_period['Return'].std() * np.sqrt(252)  # Annualize
+        metrics['High'] = df_period.max().values[0]
+        metrics['Low'] = df_period.min().values[0]
+        metrics['Sharpe Ratio'] = metrics['Performance'] / metrics['Volatility (p.a.)']
+        metrics['Max Drawdown'] = ((df_period / df_period.cummax() - 1).min()).values[0]
+
+        # VaR and CVaR
+        returns = df_period['Return'].dropna()
+        metrics['VaR 95'] = np.percentile(returns, 5)
+        metrics['CVaR 95'] = returns[returns <= metrics['VaR 95']].mean()
+
+        return metrics
+
+    metrics_names = ['Performance', 'Volatility (p.a.)', 'High', 'Low',
+                     'Sharpe Ratio', 'Max Drawdown', 'VaR 95', 'CVaR 95']
+    results = []
+
+    for period_name, period in periods.items():
+        metrics = calculate_period_metrics(index_values, period)
+        metrics['Period'] = period_name
+        results.append(metrics)
+
+    return pd.DataFrame(results).set_index('Period').T
+
+
+@tool
+def overwrite_config(update):
+    ''' Overwrite the current configuration with a new one. This should be called when existing config should be scratched.
+
+    Do this when the user wants to start over, reset, or when the user wants to change the configuration completely
+
+    update: The new configuration to set. It must follow the config schema. sector and country are list.
+    '''
+    st.session_state.old_config = copy.deepcopy(st.session_state.config)
+    st.session_state.config = copy.deepcopy(update)
+    # st.write(st.session_state.old_config, st.session_state.config)
+    result = apply_screening(st.session_state.symbol_metadata, st.session_state.config)
+    return f'There are {len(result)} stocks selected so far.' if result else 'No result.'
+    
+
+@tool
+def update_config(update):
+    ''' Filter stocks based on the current configuration. This should be called when the configuration is updated.
+
+    update: The updated configuration to apply to the current configuration. It must follow the config schema. sector and country are list.
+    '''
+    st.session_state.old_config = copy.deepcopy(st.session_state.config)
+    st.session_state.config = update_schema_object(st.session_state.config, update)
+    # st.write(st.session_state.old_config, st.session_state.config)
+    result = apply_screening(st.session_state.symbol_metadata, st.session_state.config)
+    st.code(f'There are {len(result)} stocks meet the criteria.')
+    return f'There are {len(result)} stocks selected so far.' if result else 'No result.'
 
 
 def setup_sidebar(universe=None):
@@ -525,14 +595,17 @@ def setup_sidebar(universe=None):
         st.title("Index Design with Llama 3")
         st.markdown(multiline_text, unsafe_allow_html=True)
         with st.expander('Examples'):
-            st.write('I want the top 10 stock with highest revenue, then top 3 with highest price to earnings ratio.')
+            st.caption('An index tracking the performance of renewable energy companies in Europe, with a focus on market leaders and innovators.')
+            st.caption('An index focusing on high-growth companies in emerging markets, targeting sectors like technology, healthcare, and consumer goods.')
         with st.expander("Stock Universe"):
             if universe is not None:
                 c1, c2, c3 = st.columns([1, 1, 1])
                 c1.metric("Stocks", universe.shape[0])
-                c2.metric("Industries", universe['industry'].nunique())
+                c2.metric("Sectors", universe['sector'].nunique())
                 c3.metric("Countries", universe['country'].nunique())
                 st.write(universe)
+        with st.expander("Configuration"):
+            st.write(st.session_state.config)
 
     log_area = st.sidebar.container()
 
@@ -541,19 +614,6 @@ def setup_sidebar(universe=None):
             with st.expander(label):
                 st.write(message)
     return log_message
-
-
-def create_symbol_universe(n=100):
-    symbols = generate_dummy_stock_symbols(n)
-    stock_info = [get_dummy_stock_info(symbol) for symbol in symbols]
-    df = pd.DataFrame(stock_info).set_index('symbol')
-    return df
-
-
-tool_registry = {
-    'filter_stocks': filter_stocks,
-    'rank_stocks_by_metric': rank_stocks_by_metric,
-}
 
 
 def tool_registry_dispatch(tool_name, args):
@@ -566,11 +626,32 @@ def setup_llm():
     llm = ChatGroq(
         groq_api_key=os.getenv('GROQ_API_KEY'),
         model='llama3-70b-8192',
-        temperature=0.0,
+        temperature=0.5,
         **proxy_params
     )
     return llm.bind_tools(tool_registry.values(), tool_choice='auto')
 
+
+def backtest():
+    index_series = calculate_index_value(st.session_state.symbol_price,
+                                         st.session_state.symbol_metadata, st.session_state.config)
+    st.line_chart(index_series)
+    index_performance = calculate_all_periods_performance(index_series)
+    st.write(index_performance)
+
+
+@tool
+def run_backtest():
+    ''' Run backtest based on the current configuration. This should be called when the configuration is finalized.'''
+    backtest()
+    return 'Backtest completed.'
+
+
+tool_registry = {
+    'update_config': update_config,
+    'overwrite_config': overwrite_config,
+    'run_backtest': run_backtest,
+}
 
 greeting_prompt = '''
 Designing a stock index involves answering questions like: 
@@ -584,39 +665,47 @@ Designing a stock index involves answering questions like:
 8. **Calculation Type**: How will dividends, coupons, taxes be treated in the index calculation?
 9. **Base Date and Base Value**: What will be the base date and the base value for the index?
 
-Ask me anything about stock indices!
+I will guide you to design the index by asking questions. When you are ready, say it and we will run a backtest to evaluate the index performance.
+
+Let's get started!
 '''
 
 template = '''
-You are helping the user design a stock index. The stock universe is given. 
-Answer the questions as you can and use the tools to interact with the stock universe.
-Use the tools only when necessary. Use the arguments that the user provides.
+You are helping the user design a stock index. The index config follows the schema: {schema}
 
-What a tool returns unknown or zero result, just say "I don't know" or "I can't find it".
+The current config is: {config}
 
-Use the following format:
+Guide user to design the index by asking questions and manipulating the schema. It's OK if zero stocks are selected.
+
+Use tools only when necessary. When the tool returns error or zero result, stop using the tool and continue with the next question.
+
+When the user finishes, run backtest. When the backtest is done, summarize the index in layman's term in one sentence.
+
+
+Output using the following format:
 
 Thought: you should always think about what to do
 
-Action: the action you take
+Action: the action you take, omit if none
 
-Observation: the result of the tool call
+Observation: the result of the tool call, omit if none
 
 ... (this Thought/Action/Action Input/Observation can repeat N times)
 
-Thought: I now know the final answer
-
-Final Answer: the final answer to the original input question
+final answer to the original input question
 
 '''
 
 
 def main():
 
-    if st.session_state.get('symbol_universe') is None:
-        st.session_state.symbol_universe = create_symbol_universe()
+    if 'symbol_metadata' not in st.session_state:
+        st.session_state.symbol_metadata = generate_stock_metadata(1000)
+        st.session_state.symbol_price = generate_random_walk_prices(st.session_state.symbol_metadata.index.tolist())
+        st.session_state.config = {}
+        st.sidebar.info('Welcome to Index Design')
 
-    logger = setup_sidebar(st.session_state.symbol_universe)
+    logger = setup_sidebar(st.session_state.symbol_metadata)
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -629,13 +718,13 @@ def main():
 
     llm = setup_llm()
 
-    if question := st.chat_input("What is up?"):
+    if question := st.chat_input("Let's design an index"):
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
 
         messages = [
-            SystemMessage(template),
+            SystemMessage(template.format(schema=json_schema, config=st.session_state.config)),
             HumanMessage(question)
         ]
         with st.status("Thinking...", expanded=True):
