@@ -665,7 +665,7 @@ Designing a stock index involves answering questions like:
 8. **Calculation Type**: How will dividends, coupons, taxes be treated in the index calculation?
 9. **Base Date and Base Value**: What will be the base date and the base value for the index?
 
-I will guide you to design the index by asking questions. When you are ready, say it and we will run a backtest to evaluate the index performance.
+I will guide you to design the index by asking questions. When you are ready, say "I am done" and we will run a backtest to evaluate the index performance.
 
 Let's get started!
 '''
