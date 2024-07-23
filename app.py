@@ -684,18 +684,19 @@ tool_registry = {
 }
 
 greeting_prompt = '''
-Designing a stock index involves answering questions like: 
-1. **Purpose**: What is the primary objective of this index? 
-2. **Geographical Focus**: Which region or regions will the index cover?
-3. **Market Focus**: What type of equities will be included, i.e. size, sector, industry?
-4. **Inclusion Criteria**: What criteria will you use to select the companies included in the index, such as trading volume, capticalization, financial metrics?
+Designing a stock index involves addressing key questions:
+
+1. **Purpose**: What is the primary objective of this index?
+2. **Geographical Focus**: Which regions will the index cover?
+3. **Market Focus**: What type of equities will be included (e.g., size, sector, industry)?
+4. **Inclusion Criteria**: What criteria will you use to select the companies for the index (e.g., trading volume, capitalization, financial metrics)?
 5. **Exclusion Criteria**: Are there any companies or sectors you want to exclude?
 6. **Weighting Method**: How will the companies be weighted in the index?
 7. **Rebalancing Frequency**: How often will the index be reviewed and rebalanced?
-8. **Calculation Type**: How will dividends, coupons, taxes be treated in the index calculation?
-9. **Base Date and Base Value**: What will be the base date and the base value for the index?
+8. **Calculation Type**: How will dividends, coupons, and taxes be treated in the index calculation?
+9. **Base Date and Base Value**: What will be the base date and base value for the index?
 
-I will guide you to design the index by asking questions. When you are ready, say "I am done" and we will run a backtest to evaluate the index performance.
+I will guide you through the process by asking questions. When you are ready, say "I am done," and we will run a backtest to evaluate the index performance.
 
 Hit the browser refresh button to start over.
 
