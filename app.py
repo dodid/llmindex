@@ -697,6 +697,8 @@ Designing a stock index involves answering questions like:
 
 I will guide you to design the index by asking questions. When you are ready, say "I am done" and we will run a backtest to evaluate the index performance.
 
+Hit the browser refresh button to start over.
+
 Let's get started!
 '''
 
@@ -742,7 +744,6 @@ def main():
         st.session_state.symbol_metadata = generate_stock_metadata(1000)
         st.session_state.symbol_price = generate_random_walk_prices(st.session_state.symbol_metadata.index.tolist())
         st.session_state.config = {}
-        st.sidebar.info('Welcome to Index Design')
 
     logger = setup_sidebar(st.session_state.symbol_metadata)
 
@@ -758,7 +759,7 @@ def main():
     llm = setup_llm()
 
     try:
-        if question := st.chat_input("Let's design an index"):
+        if question := st.chat_input("Type here to ask a question"):
             st.session_state.messages.append({"role": "user", "content": question})
             with st.chat_message("user"):
                 st.markdown(question)
