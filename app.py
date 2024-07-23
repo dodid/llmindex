@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
-from groq import BadRequestError
+from groq import BadRequestError, InternalServerError
 from langchain.globals import set_debug
 from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
                                      ToolMessage)
@@ -789,6 +789,8 @@ def main():
             st.session_state.messages.append({"role": "assistant", "content": ai_msg.content})
     except BadRequestError as e:
         st.error(f"LLM returns error: {e}")
+    except InternalServerError as e:
+        st.error(f"GroqCloud service unavailable: {e}")
 
 
 if __name__ == "__main__":
