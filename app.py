@@ -184,9 +184,10 @@ json_schema = {
                 "country": {
                     "type": "array",
                     "items": {"type": "string", "enum": ["USA", "Canada", "UK", "Germany", "France", "Japan", "China",
-                                                        "India", "Brazil", "Australia"]}
+                                                         "India", "Brazil", "Australia"]}
                 }
-            }
+            },
+            "additionalProperties": False
         },
         "sort_by": {
             "type": "object",
@@ -231,7 +232,8 @@ json_schema = {
         "base_value": {
             "type": "number",
             "description": "The starting value of the index at the base_date"
-        }
+        },
+        "additionalProperties": False
     },
     "required": []
 }
@@ -242,10 +244,22 @@ def verify_schema(json):
         jsonschema.validate(instance=json, schema=json_schema)
     except Exception:
         st.code("Invalid config detected. Attempting to fix it.")
-        if json.get('sector') and json['sector'].get('enum'):
-            json['sector'] = json['sector']['enum']
-        if json.get('country') and json['country'].get('enum'):
-            json['country'] = json['country']['enum']
+        if json.get('filters') and json['filters'].get('sector') and isinstance(json['filters']['sector'], dict):
+            json['filters']['sector'] = json['sector']['enum']
+        if json.get('filters') and json['filters'].get('country') and isinstance(json['filters']['country'], dict):
+            json['filters']['country'] = json['country']['enum']
+        if json.get('filters') and json['filters'].get('sort_by'):
+            json['sort_by'] = json['filters'].pop('sort_by')
+        if json.get('filters') and json['filters'].get('limit'):
+            json['limit'] = json['filters'].pop('limit')
+        if json.get('filters') and json['filters'].get('sector'):
+            json['filters']['sector'] = [x for x in json['filters']['sector']
+                                         if x in json_schema['properties']['filters']["properties"]['sector']['items']['enum']]
+        if json.get('filters') and json['filters'].get('country'):
+            json['filters']['country'] = [x for x in json['filters']['country']
+                                          if x in json_schema['properties']['filters']["properties"]['country']['items']['enum']]
+        jsonschema.validate(instance=json, schema=json_schema)
+
 
 def generate_stock_metadata(num_stocks):
     def random_ticker():
@@ -584,14 +598,14 @@ def overwrite_config(update):
     st.session_state.config = copy.deepcopy(update)
     # st.write(st.session_state.old_config, st.session_state.config)
     result = apply_screening(st.session_state.symbol_metadata, st.session_state.config)
-    return f'There are {len(result)} stocks selected so far.' if result else 'No result.'
-    
+    return f'There are {len(result)} stocks selected.' if result else 'No result.'
+
 
 @tool
 def update_config(update):
     ''' Filter stocks based on the current configuration. This should be called when the configuration is updated.
 
-    update: The updated configuration to apply to the current configuration. It must follow the config schema. sector and country are list.
+    The update can be a snippet of the configuration that follows the schema. It will be merged with the current configuration.
     '''
     verify_schema(update)
     st.session_state.old_config = copy.deepcopy(st.session_state.config)
@@ -610,8 +624,8 @@ def setup_sidebar(universe=None):
         st.title("Index Design with Llama 3")
         st.markdown(multiline_text, unsafe_allow_html=True)
         with st.expander('Examples'):
-            st.caption('An index tracking the performance of renewable energy companies in Europe, with a focus on market leaders and innovators.')
-            st.caption('An index focusing on high-growth companies in developing countries, targeting sectors like technology, healthcare, and consumer goods.')
+            st.caption('Design an index focusing on high-growth companies in developing countries, targeting sectors like technology, healthcare, and consumer goods.')
+            st.caption('Create a high-yield stock index composed of stocks with yield returns in the top 20%.')
         with st.expander("Stock Universe"):
             if universe is not None:
                 c1, c2, c3 = st.columns([1, 1, 1])
@@ -651,7 +665,7 @@ def setup_llm():
 def backtest():
     index_series = calculate_index_value(st.session_state.symbol_price,
                                          st.session_state.symbol_metadata, st.session_state.config)
-    st.line_chart(index_series)
+    st.line_chart(index_series, x_label='Date', y_label='Index Value (rough estimate)')
     index_performance = calculate_all_periods_performance(index_series)
     st.write(index_performance)
 
@@ -691,28 +705,33 @@ You are helping the user design a stock index. The index configuration must foll
 
 The current config is: {config}
 
-Guide user to design the index by asking questions and manipulating the schema. If user uses metric not supported by the schema, say the metric is not supported.
+Guide the user through the design process by asking questions about their preferences and manipulating the schema with the tools. 
 
-If user wants to start over, reset, or change the configuration completely, call the tool "overwrite_config" with the new configuration.
+If the user uses a metric not supported by the schema, inform them that the metric is not supported.
 
-It's OK if zero stocks are selected.
+If the user wants to start over, reset, or change the configuration completely, call the tool "overwrite_config" with the new configuration.
 
-Use tools when you feel confident. When the tool returns error or zero result, stop using the tool and continue with the next question.
+It's okay if zero stocks are selected.
 
-When the user signals he has finished, run backtest with current config whatever it is. When the backtest is done, summarize the key features of the index in one sentence.
+If the tool returns an error or zero results, stop using the tool and continue with the next question.
 
+When the user indicates they have finished, always run a backtest with the current config, whatever it is. 
 
-Output using the following format:
+After the backtest, describe the index in one sentence.
 
-**Thought**: you should always think about what to do
+**Note:** 
 
-**Action**: the action you take, omit if none
+Use the following format for responses:
 
-**Observation**: the result of the tool call, omit if none
+**Thought**: What you are considering to do.
 
-... (this Thought/Action/Action Input/Observation can repeat N times)
+**Action**: The action you take (omit if none).
 
-**Answer** answer to the original input question
+**Observation**: The result of the tool call (omit if none).
+
+... you can repeat thought/action/observation as needed.
+
+**Answer**: Response to the user's input or question.
 
 '''
 
