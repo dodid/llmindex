@@ -7,11 +7,13 @@ from datetime import date
 from typing import List, Optional
 
 import httpx
+import jsonschema
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from groq import BadRequestError
 from langchain.globals import set_debug
 from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
                                      ToolMessage)
@@ -43,7 +45,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -61,7 +63,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -79,7 +81,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -97,7 +99,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 1,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -115,7 +117,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -133,7 +135,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -151,7 +153,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -169,7 +171,7 @@ json_schema = {
                             "items": {"type": "number"},
                             "minItems": 2,
                             "maxItems": 2,
-                            "description": "Array containing min and max percentiles for filtering"
+                            "description": "Array containing min and max percentiles for filtering in range 0 - 100"
                         }
                     }
                 },
@@ -189,7 +191,8 @@ json_schema = {
         "sort_by": {
             "type": "object",
             "properties": {
-                "field": {"type": "string"},
+                "field": {"type": "string", "enum": ["market_cap", "pe_ratio", "dividend_yield", "debt_equity_ratio",
+                                                     "esg_score", "price_to_book_ratio", "revenue", "earnings_per_share"]},
                 "order": {"type": "string", "enum": ["asc", "desc"]}
             },
             "required": ["field", "order"]
@@ -233,6 +236,16 @@ json_schema = {
     "required": []
 }
 
+
+def verify_schema(json):
+    try:
+        jsonschema.validate(instance=json, schema=json_schema)
+    except Exception:
+        st.code("Invalid config detected. Attempting to fix it.")
+        if json.get('sector') and json['sector'].get('enum'):
+            json['sector'] = json['sector']['enum']
+        if json.get('country') and json['country'].get('enum'):
+            json['country'] = json['country']['enum']
 
 def generate_stock_metadata(num_stocks):
     def random_ticker():
@@ -323,9 +336,8 @@ def generate_random_walk_prices(symbols):
     Returns:
     - DataFrame with stock symbols as columns and rows as dates with generated close prices.
     """
-    # Get today's date and generate date range from 2020-01-01 to today
     end_date = pd.Timestamp.today()
-    start_date = pd.Timestamp('2022-01-01')
+    start_date = pd.Timestamp('2023-01-01')
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
 
     # Initialize DataFrame to hold the stock prices
@@ -424,6 +436,7 @@ def apply_screening(metadata, config):
                 metadata = metadata[(metadata[field] >= min_value) & (metadata[field] <= max_value)]
                 progress.append(('percentile_range_limit', field, len(metadata)))
 
+    print(progress)
     return metadata.index.to_list()
 
 
@@ -566,6 +579,7 @@ def overwrite_config(update):
 
     update: The new configuration to set. It must follow the config schema. sector and country are list.
     '''
+    verify_schema(update)
     st.session_state.old_config = copy.deepcopy(st.session_state.config)
     st.session_state.config = copy.deepcopy(update)
     # st.write(st.session_state.old_config, st.session_state.config)
@@ -579,12 +593,13 @@ def update_config(update):
 
     update: The updated configuration to apply to the current configuration. It must follow the config schema. sector and country are list.
     '''
+    verify_schema(update)
     st.session_state.old_config = copy.deepcopy(st.session_state.config)
     st.session_state.config = update_schema_object(st.session_state.config, update)
     # st.write(st.session_state.old_config, st.session_state.config)
     result = apply_screening(st.session_state.symbol_metadata, st.session_state.config)
-    st.code(f'There are {len(result)} stocks meet the criteria.')
-    return f'There are {len(result)} stocks selected so far.' if result else 'No result.'
+    st.code(f'{len(result)} stocks meet the criteria: {", ".join(result)}')
+    return f'There are {len(result)} stocks selected.' if result else 'No result.'
 
 
 def setup_sidebar(universe=None):
@@ -596,7 +611,7 @@ def setup_sidebar(universe=None):
         st.markdown(multiline_text, unsafe_allow_html=True)
         with st.expander('Examples'):
             st.caption('An index tracking the performance of renewable energy companies in Europe, with a focus on market leaders and innovators.')
-            st.caption('An index focusing on high-growth companies in emerging markets, targeting sectors like technology, healthcare, and consumer goods.')
+            st.caption('An index focusing on high-growth companies in developing countries, targeting sectors like technology, healthcare, and consumer goods.')
         with st.expander("Stock Universe"):
             if universe is not None:
                 c1, c2, c3 = st.columns([1, 1, 1])
@@ -605,6 +620,7 @@ def setup_sidebar(universe=None):
                 c3.metric("Countries", universe['country'].nunique())
                 st.write(universe)
         with st.expander("Configuration"):
+            st.button("Refresh Configuration")
             st.write(st.session_state.config)
 
     log_area = st.sidebar.container()
@@ -626,7 +642,7 @@ def setup_llm():
     llm = ChatGroq(
         groq_api_key=os.getenv('GROQ_API_KEY'),
         model='llama3-70b-8192',
-        temperature=0.5,
+        temperature=0.,
         **proxy_params
     )
     return llm.bind_tools(tool_registry.values(), tool_choice='auto')
@@ -671,28 +687,32 @@ Let's get started!
 '''
 
 template = '''
-You are helping the user design a stock index. The index config follows the schema: {schema}
+You are helping the user design a stock index. The index configuration must follow this schema: {schema}
 
 The current config is: {config}
 
-Guide user to design the index by asking questions and manipulating the schema. It's OK if zero stocks are selected.
+Guide user to design the index by asking questions and manipulating the schema. If user uses metric not supported by the schema, say the metric is not supported.
 
-Use tools only when necessary. When the tool returns error or zero result, stop using the tool and continue with the next question.
+If user wants to start over, reset, or change the configuration completely, call the tool "overwrite_config" with the new configuration.
 
-When the user finishes, run backtest. When the backtest is done, summarize the index in layman's term in one sentence.
+It's OK if zero stocks are selected.
+
+Use tools when you feel confident. When the tool returns error or zero result, stop using the tool and continue with the next question.
+
+When the user signals he has finished, run backtest with current config whatever it is. When the backtest is done, summarize the key features of the index in one sentence.
 
 
 Output using the following format:
 
-Thought: you should always think about what to do
+**Thought**: you should always think about what to do
 
-Action: the action you take, omit if none
+**Action**: the action you take, omit if none
 
-Observation: the result of the tool call, omit if none
+**Observation**: the result of the tool call, omit if none
 
 ... (this Thought/Action/Action Input/Observation can repeat N times)
 
-final answer to the original input question
+**Answer** answer to the original input question
 
 '''
 
@@ -718,34 +738,37 @@ def main():
 
     llm = setup_llm()
 
-    if question := st.chat_input("Let's design an index"):
-        st.session_state.messages.append({"role": "user", "content": question})
-        with st.chat_message("user"):
-            st.markdown(question)
+    try:
+        if question := st.chat_input("Let's design an index"):
+            st.session_state.messages.append({"role": "user", "content": question})
+            with st.chat_message("user"):
+                st.markdown(question)
 
-        messages = [
-            SystemMessage(template.format(schema=json_schema, config=st.session_state.config)),
-            HumanMessage(question)
-        ]
-        with st.status("Thinking...", expanded=True):
-            while True:
-                ai_msg = llm.invoke(messages)
-                messages.append(ai_msg)
-                if ai_msg.response_metadata['finish_reason'] == 'tool_calls':
-                    logger(ai_msg.dict(), 'Tool Call')
-                    for tool_call in ai_msg.tool_calls:
-                        call_prompt = f'Calling tool: {tool_call["name"]}({tool_call["args"]})'
-                        st.code(call_prompt)
-                        tool_output = tool_registry_dispatch(tool_call["name"], tool_call["args"])
-                        messages.append(ToolMessage(tool_output, tool_call_id=tool_call["id"]))
-                else:
-                    break
+            messages = [
+                SystemMessage(template.format(schema=json_schema, config=st.session_state.config)),
+                HumanMessage(question)
+            ]
+            with st.status("Thinking...", expanded=True):
+                while True:
+                    ai_msg = llm.invoke(messages)
+                    messages.append(ai_msg)
+                    if ai_msg.response_metadata['finish_reason'] == 'tool_calls':
+                        logger(ai_msg.dict(), 'Tool Call')
+                        for tool_call in ai_msg.tool_calls:
+                            call_prompt = f'Calling tool: {tool_call["name"]}({tool_call["args"]})'
+                            st.code(call_prompt)
+                            tool_output = tool_registry_dispatch(tool_call["name"], tool_call["args"])
+                            messages.append(ToolMessage(tool_output, tool_call_id=tool_call["id"]))
+                    else:
+                        break
 
-        logger(ai_msg.dict(), 'Final')
+            logger(ai_msg.dict(), 'Final')
 
-        with st.chat_message("assistant"):
-            st.markdown(ai_msg.content)
-        st.session_state.messages.append({"role": "assistant", "content": ai_msg.content})
+            with st.chat_message("assistant"):
+                st.markdown(ai_msg.content)
+            st.session_state.messages.append({"role": "assistant", "content": ai_msg.content})
+    except BadRequestError as e:
+        st.error(f"LLM returns error: {e}")
 
 
 if __name__ == "__main__":
